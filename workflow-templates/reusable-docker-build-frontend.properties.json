@@ -1,0 +1,14 @@
+{
+  "name": "Docker platform build for frontend application",
+  "description": "Frontend reusable peace of CI starter workflow.",
+  "iconName": "octicon bookmark",
+  "categories": [
+    "Yarn",
+    "npm"
+  ],
+  "filePatterns": [
+    "package.json$",
+    "^Dockerfile",
+    ".*\\.md$"
+  ]
+}
