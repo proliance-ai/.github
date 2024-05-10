@@ -1,0 +1,157 @@
+name: Build and push multi-arch image to GitHub Container Registry for frontend application
+
+on:
+  push:
+    branches:
+      - "*"
+      - $default-branch
+    tags:
+      - '*.*.*'
+  pull_request:
+    branches:
+      - $default-branch
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+  CI_JOB_TOKEN: ${{ secrets.CI_JOB_TOKEN }} # Token to access current GitLab Server to pull self-made dependencies
+  CONTAINER_NAME: p360_frontend_v2
+
+jobs:
+  build-linux-amd64:
+    name: Docker build linux/amd64
+    uses: ./.github/workflows/reusable-docker-build.yml
+    with:
+      runs-on: X64 # Specify correct label of GitHub Runner
+      images: ghcr.io/${{ github.repository }}
+      platforms: linux/amd64
+    secrets:
+      token: ${{ secrets.CI_JOB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SECURITY_GROUP_ID: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+
+  build-linux-arm64:
+    name: Docker build linux/arm64
+    uses: ./.github/workflows/reusable-docker-build.yml
+    with:
+      runs-on: ARM64
+      images: ghcr.io/${{ github.repository }}
+      platforms: linux/arm64
+    secrets:
+      token: ${{ secrets.CI_JOB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SECURITY_GROUP_ID: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+
+  build-multi-platform:
+    name: Docker build final image
+    needs:
+      - build-linux-amd64
+      - build-linux-arm64
+    runs-on: self-hosted
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-uri: ${{ env.REGISTRY_IMAGE }}@${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Create temp ingress rule to allow GitLab connection from GitHub Actions runner
+      - name:  Authorize Gitlab Connections
+        uses: mnavarrocarter/authorize-aws-security-group-ingress-action@v1.1.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'eu-central-1'
+          aws-security-group-id: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+          protocol: 'tcp'
+          port: 443
+
+      - name: Docker meta
+        uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the GitHub package registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create a multi-architecture container image
+        uses: int128/docker-manifest-create-action@v2
+        id: build
+        with:
+          push: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/heads/development') || startsWith(github.ref, 'refs/tags/')) }}
+          index-annotations: ${{ steps.metadata.outputs.labels }}
+          # If we want to add the latest tag to any build for specified below branches (2nd line in tags), then we need to add a line below.
+          # Otherwise, only tags with branch name will be created. Reference https://github.com/docker/metadata-action?tab=readme-ov-file#basic
+          tags: |
+            ${{ steps.metadata.outputs.tags }}
+            ${{ github.event_name == 'push' && 'ghcr.io/proliance-ai/p360_frontend_v2:latest' || '' }}
+          sources: |
+            ${{ needs.build-linux-amd64.outputs.image-uri }}
+            ${{ needs.build-linux-arm64.outputs.image-uri }}
+
+      - name: Clean the working directory on self hosted runners
+        uses: eviden-actions/clean-self-hosted-runner@v1
+        if: ${{ always() }}
+
+  test:
+    name: Test resulted image
+    needs: [build-multi-platform]
+    runs-on: self-hosted
+    timeout-minutes: 10
+    if: >-
+      ${{ (
+        github.event_name == 'push' && 
+        (startsWith(github.ref, 'refs/heads/development') || startsWith(github.ref, 'refs/tags/'))
+      ) }}
+    steps:
+      - name: Debug Output
+        run: |
+          echo "Event Name: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+
+      - name: Log in to the GitHub package registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Docker Image
+        run: |
+          echo "---Starting the container"
+          docker run -d --name ${{ env.CONTAINER_NAME }} --rm ${{ needs.build-multi-platform.outputs.image-uri }}
+          sleep 20
+          echo "---Container logs"
+          docker container logs -n 50 ${{ env.CONTAINER_NAME }}
+          echo "---Stopping the container"
+          docker container stop ${{ env.CONTAINER_NAME }}
+
+      - name: Clean the working directory on self hosted runners
+        uses: eviden-actions/clean-self-hosted-runner@v1
+        if: ${{ always() }}

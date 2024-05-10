@@ -1,0 +1,106 @@
+name: Docker platform build
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: Passed to docker/metadata-action
+        type: string
+        required: true
+      context:
+        description: Passed to docker/build-push-action
+        type: string
+        required: false
+        default: "."
+      platforms:
+        description: Passed to docker/build-push-action
+        type: string
+        required: true
+      runs-on:
+        description: Defines where to run the job
+        type: string
+        required: false
+        default: "self-hosted"
+    secrets:
+      token:
+        required: true
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_SECURITY_GROUP_ID:
+        required: true
+    outputs:
+      image-uri:
+        description: Image URI
+        value: ${{ jobs.build.outputs.image-uri }}
+
+jobs:
+  build:
+    name: Build an image for a concrete platform with cache support
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 20
+    outputs:
+      image-uri: ${{ env.REGISTRY }}/${{ github.repository }}@${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Create temp ingress rule to allow SSH connection from GitHub Actions runner
+      - name: Authorize Gitlab Connections
+        uses: mnavarrocarter/authorize-aws-security-group-ingress-action@v1.1.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'eu-central-1'
+          aws-security-group-id: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+          protocol: 'tcp'
+          port: 443
+
+      - name: Prepare
+        run: |
+          platform=${{ inputs.platforms }}
+          image=${{ inputs.images }}
+          echo "ARCH=${platform#*linux/}" >> $GITHUB_ENV
+          echo "REGISTRY=${image%%/*}" >> $GITHUB_ENV
+
+      - name: Log in to the GitHub package registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ${{ inputs.images }}
+          flavor: suffix=-${{ env.ARCH }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate cache-from and cache-to inputs of docker/build-push-action
+        uses: int128/docker-build-cache-config-action@v1
+        id: cache
+        with:
+          image: ${{ inputs.images }}/cache
+          flavor: suffix=-${{ env.ARCH }}
+          cache-key-fallback: ${{ inputs.images }}
+          pull-request-cache: true
+
+      - name: Build and push by tags
+        uses: docker/build-push-action@v5
+        id: build
+        with:
+          push: true
+          context: ${{ inputs.context }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          build-args: CI_JOB_TOKEN=${{ secrets.token }}
+          labels: |
+            ${{ steps.metadata.outputs.labels }}
+            org.opencontainers.image.authors=${{ github.actor }}
+          cache-from: ${{ steps.cache.outputs.cache-from }}
+          cache-to: ${{ steps.cache.outputs.cache-to }}
+          platforms: ${{ inputs.platforms }}

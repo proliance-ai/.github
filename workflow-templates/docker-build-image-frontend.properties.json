@@ -1,0 +1,14 @@
+{
+  "name": "Build and push multi-arch image to GitHub Container Registry for frontend application",
+  "description": "Frontend CI starter workflow.",
+  "iconName": "octicon bookmark",
+  "categories": [
+    "Yarn",
+    "npm"
+  ],
+  "filePatterns": [
+    "package.json$",
+    "^Dockerfile",
+    ".*\\.md$"
+  ]
+}
