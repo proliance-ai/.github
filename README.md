@@ -1,2 +1,2 @@
 # .github
-Proliance organisation's public repository for reusable workflows
+Proliance organisation's public repository for starter workflows
