@@ -1,0 +1,9 @@
+{
+  "name": "Cleanup container packages for all repositories contain container images (packages)",
+  "description": "Container packages cleanup workflow.",
+  "iconName": "octicon bookmark",
+  "filePatterns": [
+    "^Dockerfile",
+    ".*\\.md$"
+  ]
+}

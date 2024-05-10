@@ -1,0 +1,14 @@
+{
+  "name": "Java CI with Maven and Docker for backend applications",
+  "description": "Backend CI starter workflow.",
+  "iconName": "octicon bookmark",
+  "categories": [
+    "Maven",
+    "Spring"
+  ],
+  "filePatterns": [
+    "pom.xml$",
+    "^Dockerfile",
+    ".*\\.md$"
+  ]
+}

@@ -1,4 +1,4 @@
-name: Docker platform build for frontend applications
+name: Docker platform build for backend applications
 
 on:
   workflow_call:
@@ -21,6 +21,10 @@ on:
         type: string
         required: false
         default: "self-hosted"
+      artifact_name:
+        description: Name of the artifact to download
+        type: string
+        required: true
     secrets:
       token:
         required: true
@@ -63,6 +67,16 @@ jobs:
           image=${{ inputs.images }}
           echo "ARCH=${platform#*linux/}" >> $GITHUB_ENV
           echo "REGISTRY=${image%%/*}" >> $GITHUB_ENV
+
+      - name: Download artifact from Maven Build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ github.workspace }}/target/
+
+      - name: Check current directory
+        run: |
+          ls -latr
 
       - name: Log in to the GitHub package registry
         uses: docker/login-action@v3

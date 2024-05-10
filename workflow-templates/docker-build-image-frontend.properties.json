@@ -1,5 +1,5 @@
 {
-  "name": "Build and push multi-arch image to GitHub Container Registry for frontend application",
+  "name": "Build and push multi-arch image to GitHub Container Registry for frontend applications",
   "description": "Frontend CI starter workflow.",
   "iconName": "octicon bookmark",
   "categories": [

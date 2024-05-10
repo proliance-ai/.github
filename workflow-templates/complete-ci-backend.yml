@@ -1,0 +1,303 @@
+name: Java CI with Maven and Docker for backend applications
+
+on:
+  push:
+    branches:
+      - '*'
+      - development
+    tags:
+      - '*.*.*'
+  pull_request:
+    branches:
+      - development
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository -Djava.awt.headless=true"
+  MAVEN_CLI_OPTS: "--settings mvn_ci_settings_github.xml --batch-mode --errors --fail-at-end"
+  CI_JOB_TOKEN: ${{ secrets.CI_JOB_TOKEN }} # Token to access current GitLab Server to pull self-made dependencies
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  maven-build:
+    name: Build artifact with Maven
+    runs-on: [self-hosted]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Create temp ingress rule to allow GitLab connection from GitHub Actions runner
+      - name: Authorize Gitlab Connections
+        uses: mnavarrocarter/authorize-aws-security-group-ingress-action@v1.1.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'eu-central-1'
+          aws-security-group-id: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+          protocol: 'tcp'
+          port: 443
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'corretto'
+
+      - name: Cache local Maven repository
+        uses: actions/cache@v4
+        with:
+          path: .m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Build with Maven
+        run: |
+          mvn --version
+          mvn ${{ env.MAVEN_CLI_OPTS }} clean package -DskipTests=true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: java_build_${{ github.event.repository.name }}
+          path: target/*.jar
+          retention-days: 1
+
+      - name: Publish Maven artifact to GitHub Packages
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN is the default env for the password
+        run: |
+          mvn --version
+          mvn --batch-mode --errors --fail-at-end deploy -Drevision=${{ github.ref_name }} -DskipTests=true
+
+      # Optional: Uploads the full dependency graph to GitHub to improve the quality of Dependabot alerts this repository can receive
+      - name: Update dependency graph
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+        uses: advanced-security/maven-dependency-submission-action@v4
+
+      - name: Clean the working directory on self hosted runners
+        uses: eviden-actions/clean-self-hosted-runner@v1
+        if: ${{ always() }}
+
+  docker-build-linux-amd64:
+    name: Docker build linux/amd64
+    uses: ./.github/workflows/reusable-docker-build.yml
+    needs:
+      - maven-build
+      - maven-test
+    if: ${{ !cancelled() && needs.maven-build.result == 'success' }}
+    with:
+      runs-on: X64 # Specify correct label of GitHub Runner
+      images: ghcr.io/${{ github.repository }}
+      platforms: linux/amd64
+      artifact_name: java_build_${{ github.event.repository.name }}
+    secrets:
+      token: ${{ secrets.CI_JOB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SECURITY_GROUP_ID: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+
+  docker-build-linux-arm64:
+    name: Docker build linux/arm64
+    uses: ./.github/workflows/reusable-docker-build.yml
+    needs:
+      - maven-build
+      - maven-test
+    if: ${{ !cancelled() && needs.maven-build.result == 'success' }}
+    with:
+      runs-on: ARM64
+      images: ghcr.io/${{ github.repository }}
+      platforms: linux/arm64
+      artifact_name: java_build_${{ github.event.repository.name }}
+    secrets:
+      token: ${{ secrets.CI_JOB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SECURITY_GROUP_ID: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+
+  docker-build-multi-platform:
+    name: Docker build final multi-platform image
+    needs:
+      - docker-build-linux-amd64
+      - docker-build-linux-arm64
+    if: ${{ !cancelled() && needs.docker-build-linux-amd64.result == 'success' && needs.docker-build-linux-arm64.result == 'success' }}
+    runs-on: [self-hosted]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-uri: ${{ env.REGISTRY_IMAGE }}@${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Create temp ingress rule to allow GitLab connection from GitHub Actions runner
+      - name: Authorize Gitlab Connections
+        uses: mnavarrocarter/authorize-aws-security-group-ingress-action@v1.1.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'eu-central-1'
+          aws-security-group-id: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+          protocol: 'tcp'
+          port: 443
+
+      - name: Docker meta
+        uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the GitHub package registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create a multi-architecture container image
+        uses: int128/docker-manifest-create-action@v2
+        id: build
+        with:
+          push: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/heads/development') || startsWith(github.ref, 'refs/tags/')) }}
+          index-annotations: ${{ steps.metadata.outputs.labels }}
+          # If we want to add the latest tag to any build for specified below branches (2nd line in tags), then we need to add a line below.
+          # Otherwise, only tags with branch name will be created. Reference https://github.com/docker/metadata-action?tab=readme-ov-file#basic
+          tags: |
+            ${{ steps.metadata.outputs.tags }}
+            ${{ github.event_name == 'push' && 'ghcr.io/proliance-ai/survey-service:latest' || '' }}
+          sources: |
+            ${{ needs.docker-build-linux-amd64.outputs.image-uri }}
+            ${{ needs.docker-build-linux-arm64.outputs.image-uri }}
+
+      - name: Clean the working directory on self hosted runners
+        uses: eviden-actions/clean-self-hosted-runner@v1
+        if: ${{ always() }}
+
+  maven-test:
+    name: Java unit tests
+    runs-on: [self-hosted]
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && (startsWith(github.ref, 'refs/heads/development') || startsWith(github.ref, 'refs/tags/')) }}
+    needs: [maven-build]
+    timeout-minutes: 20
+    container:
+      image: maven:3-amazoncorretto-21
+    steps:
+      - name: Prepare
+        run: |
+          amazon-linux-extras install epel -y
+          yum remove libuv -y 
+          yum install libuv --disableplugin=priorities -y 
+          yum install nodejs -y 
+
+      # Everything above should use up to node:16
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Restore Maven cache
+        uses: actions/cache/restore@v3
+        with:
+          path: .m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Authorize Gitlab Connections
+        uses: mnavarrocarter/authorize-aws-security-group-ingress-action@v1.0.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'eu-central-1'
+          aws-security-group-id: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+          protocol: 'tcp'
+          port: 443
+
+      - name: Run tests
+        run: |
+          mvn --version
+          mvn ${{ env.MAVEN_CLI_OPTS }} clean verify -DskipTests=false jacoco:report
+          awk -F"," '{ instructions += $4 + $5; covered += $5 } END { print covered, "/", instructions, " instructions covered"; print 100*covered/instructions, "% covered" }' target/site/jacoco/jacoco.csv
+          chmod +x target/site/jacoco/jacoco.xml target/site/jacoco/jacoco.csv
+
+      - name: Upload JaCoCo artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: jacoco_results_${{ github.event.repository.name }}
+          path: |
+            target/site/jacoco/jacoco.csv
+            target/site/jacoco/jacoco.xml
+          retention-days: 1
+
+      - name: Clean the working directory on self hosted runners
+        uses: eviden-actions/clean-self-hosted-runner@v1
+        if: ${{ always() }}
+
+  jacoco:
+    name: JaCoCo coverage
+    needs:
+      - maven-test
+    runs-on: [self-hosted]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download JaCoCo artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: jacoco_results_${{ github.event.repository.name }}
+          path: ${{ github.workspace }}/target/
+
+      - name: Coverage summary
+        run: |
+          chmod +x target/jacoco.xml target/jacoco.csv
+          summary=$(awk -F"," '{ instructions += $4 + $5; covered += $5 } END { print covered, "/", instructions, " instructions covered"; print 100*covered/instructions, "% covered" }' target/jacoco.csv)
+          echo "## Coverage Summary 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "$summary" >> $GITHUB_STEP_SUMMARY
+
+      - name: Add coverage to PR
+        id: jacoco
+        uses: madrapps/jacoco-report@v1.6.1
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          paths: |
+            ${{ github.workspace }}/target/jacoco.xml
+          title: JaCoCo code coverage
+          token: ${{ secrets.GITHUB_TOKEN }}
+          min-coverage-overall: 10
+          min-coverage-changed-files: 10
+
+      - name: Generate JaCoCo Badge
+        uses: cicirello/jacoco-badge-generator@v2
+        with:
+          generate-branches-badge: true
+          jacoco-csv-file: "**/jacoco.csv"
+
+      - name: Commit and push the badge (if it changed)
+        uses: EndBug/add-and-commit@v9
+        with:
+          default_author: github_actions
+          message: 'commit badge'
+          add: '*.svg'
+
+      - name: Clean the working directory on self hosted runners
+        uses: eviden-actions/clean-self-hosted-runner@v1
+        if: ${{ always() }}
