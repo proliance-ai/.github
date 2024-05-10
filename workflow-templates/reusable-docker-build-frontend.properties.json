@@ -1,5 +1,5 @@
 {
-  "name": "Docker platform build for frontend application",
+  "name": "Docker platform build for frontend applications",
   "description": "Frontend reusable peace of CI starter workflow.",
   "iconName": "octicon bookmark",
   "categories": [
