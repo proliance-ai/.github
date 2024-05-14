@@ -1,6 +1,6 @@
 {
   "name": "Docker platform build for backend applications",
-  "description": "Backend reusable peace of CI starter workflow.",
+  "description": "Backend reusable peace of CI starter workflow. Build an image for specified architecture.",
   "iconName": "octicon bookmark",
   "categories": [
     "Maven",

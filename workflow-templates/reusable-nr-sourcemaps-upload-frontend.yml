@@ -1,0 +1,112 @@
+name: Upload frontend source maps to New Relic
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      new_relic_application_id:
+        required: true
+        type: string
+      new_relic_js_base_url:
+        required: true
+        type: string
+      new_relic_source_map_dir:
+        required: true
+        type: string
+      node_version:
+        required: false
+        type: string
+        default: '18'
+    secrets:
+      new_relic_sm_uploader_user_key:
+        required: true
+      token:
+        required: true
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_SECURITY_GROUP_ID:
+        required: true
+
+jobs:
+  upload_source_maps:
+    name: Upload frontend source maps to New Relic
+    runs-on: self-hosted
+    timeout-minutes: 15
+    env:
+      CI_JOB_TOKEN: ${{ secrets.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Debug Output
+        run: |
+          echo "Event Name: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+
+      - name: Prerequisites
+        run: sudo apt update && sudo apt install -y curl jq
+
+      # Create temp ingress rule to allow GitLab connection from GitHub Actions runner
+      - name: Authorize Gitlab Connections
+        uses: mnavarrocarter/authorize-aws-security-group-ingress-action@v1.1.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'eu-central-1'
+          aws-security-group-id: ${{ secrets.AWS_SECURITY_GROUP_ID }}
+          protocol: 'tcp'
+          port: 443
+
+      - name: Create Node.js directory with proper permissions
+        run: |
+          sudo mkdir -p /home/ubuntu/actions-runner/_work/_tool/node
+          sudo chmod -R 777 /home/ubuntu/actions-runner/_work/_tool/node
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install yarn
+        run: npm install -g yarn
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache Node.js modules
+        uses: actions/cache@v4
+        id: yarn-cache # use this to check for `cache-hit` (`steps.yarn-cache.outputs.cache-hit != 'true'`)
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: List the state of node modules
+        if: ${{ steps.yarn-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        run: yarn list
+
+      - name: Install Dependencies
+        run: yarn install --non-interactive --frozen-lockfile --prefer-offline
+
+      - name: Build artifact
+        run: yarn build
+
+      - name: Run uploader script
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          NEW_RELIC_SM_UPLOADER_USER_KEY: ${{ secrets.new_relic_sm_uploader_user_key }}
+          NEW_RELIC_APPLICATION_ID: ${{ inputs.new_relic_application_id }}
+          NEW_RELIC_JS_BASE_URL: ${{ inputs.new_relic_js_base_url }}
+          NEW_RELIC_SOURCE_MAP_DIR: ${{ github.workspace }}/${{ inputs.new_relic_source_map_dir }}
+        run: ./source_maps_nr_uploader.sh
+
+      - name: Clean the working directory on self hosted runners
+        uses: eviden-actions/clean-self-hosted-runner@v1
+        if: ${{ always() }}
