@@ -1,0 +1,13 @@
+{
+  "name": "Upload frontend source maps to New Relic",
+  "description": "Frontend reusable peace of CI starter workflow. Upload source maps to New Relic.",
+  "iconName": "octicon bookmark",
+  "categories": [
+    "Yarn",
+    "npm"
+  ],
+  "filePatterns": [
+    "package.json$",
+    ".*\\.md$"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "Build and push multi-arch image to GitHub Container Registry ; upload source maps to New Relic",
+  "description": "Frontend CI starter workflow.",
+  "iconName": "octicon bookmark",
+  "categories": [
+    "Yarn",
+    "npm"
+  ],
+  "filePatterns": [
+    "package.json$",
+    "^Dockerfile",
+    ".*\\.md$"
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "Docker platform build for frontend applications",
-  "description": "Frontend reusable peace of CI starter workflow.",
+  "description": "Frontend reusable peace of CI starter workflow. Build an image for specified architecture.",
   "iconName": "octicon bookmark",
   "categories": [
     "Yarn",
